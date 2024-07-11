@@ -1,16 +1,7 @@
-// Package admin
-// @Link  https://github.com/bufanyun/hotgo
-// @Copyright  Copyright (c) 2023 HotGo CLI
-// @Author  Ms <133814250@qq.com>
-// @License  https://github.com/bufanyun/hotgo/blob/master/LICENSE
 package admin
 
 import (
 	"context"
-	"github.com/gogf/gf/v2/database/gdb"
-	"github.com/gogf/gf/v2/encoding/gjson"
-	"github.com/gogf/gf/v2/errors/gerror"
-	"github.com/gogf/gf/v2/frame/g"
 	"hotgo/internal/consts"
 	"hotgo/internal/dao"
 	"hotgo/internal/library/casbin"
@@ -24,6 +15,12 @@ import (
 	"hotgo/utility/tree"
 	"hotgo/utility/validate"
 	"sort"
+
+	"github.com/gogf/gf/v2/database/gdb"
+	"github.com/gogf/gf/v2/encoding/gjson"
+	"github.com/gogf/gf/v2/errors/gerror"
+	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/util/gconv"
 )
 
 type sAdminRole struct{}
@@ -36,13 +33,9 @@ func init() {
 	service.RegisterAdminRole(NewAdminRole())
 }
 
-// Verify 验证权限
+// Verify 验证权限 in a more efficient way
 func (s *sAdminRole) Verify(ctx context.Context, path, method string) bool {
-	var (
-		user = contexts.Get(ctx).User
-		err  error
-	)
-
+	user := contexts.Get(ctx).User
 	if user == nil {
 		g.Log().Info(ctx, "admin Verify user = nil")
 		return false
@@ -52,26 +45,38 @@ func (s *sAdminRole) Verify(ctx context.Context, path, method string) bool {
 		return true
 	}
 
-	ok, err := casbin.Enforcer.Enforce(user.RoleKey, path, method)
-	if err != nil {
-		g.Log().Infof(ctx, "admin Verify Enforce err:%+v", err)
+	if len(user.RoleKeys) < 1 {
 		return false
 	}
-	return ok
+
+	for _, roleKey := range user.RoleKeys {
+		ok, err := casbin.Enforcer.Enforce(roleKey, path, method)
+		if err != nil {
+			g.Log().Infof(ctx, "admin Verify Enforce err:%+v", err)
+			return false
+		}
+		if ok {
+			return true
+		}
+	}
+
+	return false
 }
 
 // List 获取列表
 func (s *sAdminRole) List(ctx context.Context, in *adminin.RoleListInp) (res *adminin.RoleListModel, totalCount int, err error) {
 	var (
 		mod    = dao.AdminRole.Ctx(ctx)
+		pids   = []int64{0}
 		models []*entity.AdminRole
-		pid    int64 = 0
 	)
 
 	// 非超管只获取下级角色
 	if !service.AdminMember().VerifySuperId(ctx, contexts.GetUserId(ctx)) {
-		pid = contexts.GetRoleId(ctx)
-		mod = mod.WhereLike(dao.AdminRole.Columns().Tree, "%"+tree.GetIdLabel(pid)+"%")
+		pids = contexts.GetRoleIds(ctx)
+		for _, pid := range pids {
+			mod = mod.WhereOrLike(dao.AdminRole.Columns().Tree, "%"+tree.GetIdLabel(pid)+"%")
+		}
 	}
 
 	totalCount, err = mod.Count()
@@ -86,21 +91,22 @@ func (s *sAdminRole) List(ctx context.Context, in *adminin.RoleListInp) (res *ad
 	}
 
 	res = new(adminin.RoleListModel)
-	res.List = s.treeList(pid, models)
+	res.List = s.treeList(pids, models)
 	return
 }
 
-// GetName 获取指定角色的名称
-func (s *sAdminRole) GetName(ctx context.Context, id int64) (name string, err error) {
-	r, err := dao.AdminRole.Ctx(ctx).Fields("name").WherePri(id).Order("id desc").Value()
+// GetNames 获取指定角色的名称
+func (s *sAdminRole) GetNames(ctx context.Context, ids []int64) (roleNames []string, err error) {
+	names, err := dao.AdminRole.Ctx(ctx).Fields(dao.AdminRole.Columns().Name).WherePri(ids).Order("id desc").Array()
 	if err != nil {
 		err = gerror.Wrap(err, consts.ErrorORM)
 		return
 	}
-	return r.String(), nil
+	roleNames = gconv.Strings(names)
+	return
 }
 
-// GetMemberList 获取指定用户的岗位列表
+// GetMemberList 获取指定用户的角色列表
 func (s *sAdminRole) GetMemberList(ctx context.Context, id int64) (list []*adminin.RoleListModel, err error) {
 	if err = dao.AdminRole.Ctx(ctx).WherePri(id).Order("id desc").Scan(&list); err != nil {
 		err = gerror.Wrap(err, consts.ErrorORM)
@@ -288,7 +294,15 @@ func (s *sAdminRole) DataScopeEdit(ctx context.Context, in *adminin.DataScopeEdi
 }
 
 // treeList 角色树列表
-func (s *sAdminRole) treeList(pid int64, nodes []*entity.AdminRole) (list []*adminin.RoleTree) {
+func (s *sAdminRole) treeList(pids []int64, nodes []*entity.AdminRole) (list []*adminin.RoleTree) {
+	for _, id := range pids {
+		list = append(list, s.tree(id, nodes)...)
+	}
+	return
+}
+
+// tree 角色树
+func (s *sAdminRole) tree(pid int64, nodes []*entity.AdminRole) (list []*adminin.RoleTree) {
 	list = make([]*adminin.RoleTree, 0)
 	for _, v := range nodes {
 		if v.Pid == pid {
@@ -297,7 +311,7 @@ func (s *sAdminRole) treeList(pid int64, nodes []*entity.AdminRole) (list []*adm
 			item.Label = v.Name
 			item.Value = v.Id
 
-			child := s.treeList(v.Id, nodes)
+			child := s.tree(v.Id, nodes)
 			if len(child) > 0 {
 				item.Children = child
 			}
@@ -315,7 +329,7 @@ func (s *sAdminRole) VerifyRoleId(ctx context.Context, id int64) (err error) {
 		return
 	}
 
-	ids, err := s.GetSubRoleIds(ctx, mb.RoleId, service.AdminMember().VerifySuperId(ctx, mb.Id))
+	ids, err := s.GetSubRoleIds(ctx, mb.RoleIds, service.AdminMember().VerifySuperId(ctx, mb.Id))
 	if err != nil {
 		err = gerror.New("验证角色信息失败！")
 		return
@@ -329,10 +343,13 @@ func (s *sAdminRole) VerifyRoleId(ctx context.Context, id int64) (err error) {
 }
 
 // GetSubRoleIds 获取所有下级角色ID
-func (s *sAdminRole) GetSubRoleIds(ctx context.Context, roleId int64, isSuper bool) (ids []int64, err error) {
+func (s *sAdminRole) GetSubRoleIds(ctx context.Context, roleIds []int64, isSuper bool) (ids []int64, err error) {
 	mod := dao.AdminRole.Ctx(ctx).Fields(dao.AdminRole.Columns().Id)
 	if !isSuper {
-		mod = mod.WhereNot(dao.AdminRole.Columns().Id, roleId).WhereLike(dao.AdminRole.Columns().Tree, "%"+tree.GetIdLabel(roleId)+"%")
+		mod = mod.WhereNotIn(dao.AdminRole.Columns().Id, roleIds)
+		for _, roleId := range roleIds {
+			mod = mod.WhereOrLike(dao.AdminRole.Columns().Tree, "%"+tree.GetIdLabel(roleId)+"%")
+		}
 	}
 
 	columns, err := mod.Array()
