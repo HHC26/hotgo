@@ -1,18 +1,7 @@
-// Package admin
-// @Link  https://github.com/bufanyun/hotgo
-// @Copyright  Copyright (c) 2023 HotGo CLI
-// @Author  Ms <133814250@qq.com>
-// @License  https://github.com/bufanyun/hotgo/blob/master/LICENSE
 package admin
 
 import (
 	"context"
-	"github.com/gogf/gf/v2/crypto/gmd5"
-	"github.com/gogf/gf/v2/database/gdb"
-	"github.com/gogf/gf/v2/errors/gerror"
-	"github.com/gogf/gf/v2/frame/g"
-	"github.com/gogf/gf/v2/os/gtime"
-	"github.com/gogf/gf/v2/util/grand"
 	"hotgo/internal/consts"
 	"hotgo/internal/dao"
 	"hotgo/internal/library/contexts"
@@ -23,6 +12,13 @@ import (
 	"hotgo/internal/model/input/sysin"
 	"hotgo/internal/service"
 	"hotgo/utility/simple"
+
+	"github.com/gogf/gf/v2/crypto/gmd5"
+	"github.com/gogf/gf/v2/database/gdb"
+	"github.com/gogf/gf/v2/errors/gerror"
+	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/os/gtime"
+	"github.com/gogf/gf/v2/util/grand"
 )
 
 type sAdminSite struct{}
@@ -105,7 +101,6 @@ func (s *sAdminSite) Register(ctx context.Context, in *adminin.RegisterInp) (err
 
 	data.MemberEditInp = &adminin.MemberEditInp{
 		Id:       0,
-		RoleId:   config.RoleId,
 		PostIds:  config.PostIds,
 		DeptId:   config.DeptId,
 		Username: in.Username,
@@ -220,9 +215,24 @@ func (s *sAdminSite) MobileLogin(ctx context.Context, in *adminin.MobileLoginInp
 
 // handleLogin .
 func (s *sAdminSite) handleLogin(ctx context.Context, mb *entity.AdminMember) (res *adminin.LoginModel, err error) {
-	role, dept, err := s.getLoginRoleAndDept(ctx, mb.RoleId, mb.DeptId)
+	roleIds, err := service.AdminMemberRole().GetRoleIds(ctx, mb.Id)
 	if err != nil {
 		return nil, err
+	}
+
+	roles, dept, err := s.getLoginRoleAndDept(ctx, roleIds, mb.DeptId)
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		roleIDs  []int64
+		roleKeys []string
+	)
+
+	for _, role := range roles {
+		roleIDs = append(roleIDs, role.Id)
+		roleKeys = append(roleKeys, role.Key)
 	}
 
 	user := &model.Identity{
@@ -230,8 +240,8 @@ func (s *sAdminSite) handleLogin(ctx context.Context, mb *entity.AdminMember) (r
 		Pid:      mb.Pid,
 		DeptId:   dept.Id,
 		DeptType: dept.Type,
-		RoleId:   role.Id,
-		RoleKey:  role.Key,
+		RoleIds:  roleIDs,
+		RoleKeys: roleKeys,
 		Username: mb.Username,
 		RealName: mb.RealName,
 		Avatar:   mb.Avatar,
@@ -256,19 +266,19 @@ func (s *sAdminSite) handleLogin(ctx context.Context, mb *entity.AdminMember) (r
 }
 
 // getLoginRoleAndDept 获取登录的角色和部门信息
-func (s *sAdminSite) getLoginRoleAndDept(ctx context.Context, roleId, deptId int64) (role *entity.AdminRole, dept *entity.AdminDept, err error) {
-	if err = dao.AdminRole.Ctx(ctx).Fields("id,key,status").WherePri(roleId).Scan(&role); err != nil {
+func (s *sAdminSite) getLoginRoleAndDept(ctx context.Context, roleIds []int64, deptId int64) (roles []entity.AdminRole, dept *entity.AdminDept, err error) {
+	err = dao.AdminRole.Ctx(ctx).Fields("id,key,status").
+		WhereIn(dao.AdminRole.Columns().Id, roleIds).
+		Where(dao.AdminRole.Columns().Status, consts.StatusEnabled).
+		Scan(&roles)
+
+	if err != nil {
 		err = gerror.Wrap(err, consts.ErrorORM)
 		return
 	}
 
-	if role == nil {
-		err = gerror.New("角色不存在或已被删除")
-		return
-	}
-
-	if role.Status != consts.StatusEnabled {
-		err = gerror.New("角色已被禁用，如有疑问请联系管理员")
+	if roles == nil {
+		err = gerror.New("角色不存在或已被删除，如有疑问请联系管理员")
 		return
 	}
 
@@ -311,9 +321,24 @@ func (s *sAdminSite) BindUserContext(ctx context.Context, claims *model.Identity
 		return
 	}
 
-	role, dept, err := s.getLoginRoleAndDept(ctx, mb.RoleId, mb.DeptId)
+	roleIds, err := service.AdminMemberRole().GetRoleIds(ctx, mb.Id)
 	if err != nil {
-		return err
+		return
+	}
+
+	roles, dept, err := s.getLoginRoleAndDept(ctx, roleIds, mb.DeptId)
+	if err != nil {
+		return
+	}
+
+	var (
+		roleIDs  []int64
+		roleKeys []string
+	)
+
+	for _, role := range roles {
+		roleIDs = append(roleIDs, role.Id)
+		roleKeys = append(roleKeys, role.Key)
 	}
 
 	user := &model.Identity{
@@ -321,8 +346,8 @@ func (s *sAdminSite) BindUserContext(ctx context.Context, claims *model.Identity
 		Pid:      mb.Pid,
 		DeptId:   dept.Id,
 		DeptType: dept.Type,
-		RoleId:   mb.RoleId,
-		RoleKey:  role.Key,
+		RoleIds:  roleIDs,
+		RoleKeys: roleKeys,
 		Username: mb.Username,
 		RealName: mb.RealName,
 		Avatar:   mb.Avatar,
