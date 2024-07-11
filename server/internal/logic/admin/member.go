@@ -478,9 +478,11 @@ func (s *sAdminMember) Edit(ctx context.Context, in *adminin.MemberEditInp) (err
 		return
 	}
 
-	// 验证角色ID
-	if err = service.AdminRole().VerifyRoleId(ctx, in.RoleId); err != nil {
-		return
+        // 验证角色ID
+	for _, roleId := range in.RoleIds {
+		if err = service.AdminRole().VerifyRoleId(ctx, roleId); err != nil {
+			return
+		}
 	}
 
 	// 验证部门ID
@@ -539,7 +541,19 @@ func (s *sAdminMember) Edit(ctx context.Context, in *adminin.MemberEditInp) (err
 				err = gerror.Wrap(err, "更新用户岗位失败，请稍后重试！")
 			}
 
-			needLoadSuperAdmin = in.RoleId == s.superAdmin.RoleId
+			// 更新角色
+			if err = service.AdminMemberRole().UpdateRoleIds(ctx, in.Id, in.RoleIds); err != nil {
+				err = gerror.Wrap(err, "更新用户角色失败，请稍后重试！")
+				return
+			}
+
+			for _, roleId := range in.RoleIds {
+				if roleId == s.superAdmin.RoleId {
+					needLoadSuperAdmin = true
+					break
+				}
+			}
+			
 			return
 		})
 	}
@@ -575,7 +589,20 @@ func (s *sAdminMember) Edit(ctx context.Context, in *adminin.MemberEditInp) (err
 			err = gerror.Wrap(err, "新增用户岗位失败，请稍后重试！")
 		}
 
-		needLoadSuperAdmin = in.RoleId == s.superAdmin.RoleId
+		// 更新角色
+		if err = service.AdminMemberRole().UpdateRoleIds(ctx, id, in.RoleIds); err != nil {
+			err = gerror.Wrap(err, "更新用户角色失败，请稍后重试！")
+			return
+		}
+
+		// needLoadSuperAdmin = in.RoleId == s.superAdmin.RoleId
+		for _, roleId := range in.RoleIds {
+			if roleId == s.superAdmin.RoleId {
+				needLoadSuperAdmin = true
+				break
+			}
+		}
+		
 		return
 	})
 }
@@ -614,7 +641,9 @@ func (s *sAdminMember) List(ctx context.Context, in *adminin.MemberListInp) (lis
 	}
 
 	if in.RoleId > 0 {
-		mod = mod.Where(cols.RoleId, in.RoleId)
+		if userIds, err := service.AdminMemberRole().GetMemberIds(ctx, in.RoleId); err == nil {
+			mod = mod.WhereIn(cols.Id, userIds)
+		}
 	}
 
 	if in.Id > 0 {
@@ -651,6 +680,20 @@ func (s *sAdminMember) List(ctx context.Context, in *adminin.MemberListInp) (lis
 			return nil, 0, err
 		}
 		v.PostIds = g.NewVar(columns).Int64s()
+
+		roleIds, err := service.AdminMemberRole().GetRoleIds(ctx, v.Id)
+		if err != nil {
+			err = gerror.Wrap(err, "获取用户角色数据失败！")
+			return nil, 0, err
+		}
+		v.RoleIds = roleIds
+
+		roleNames, err := service.AdminRole().GetNames(ctx, roleIds)
+		if err != nil {
+			err = gerror.Wrap(err, "获取用户角色数据失败！")
+			return nil, 0, err
+		}
+		v.RoleNames = roleNames
 	}
 	return
 }
@@ -702,6 +745,19 @@ func (s *sAdminMember) LoginMemberInfo(ctx context.Context) (res *adminin.LoginM
 		err = gerror.New("用户不存在！")
 		return
 	}
+
+	roleIds, err := service.AdminMemberRole().GetRoleIds(ctx, memberId)
+	if err != nil {
+		return
+	}
+
+	rolesNames, err := service.AdminRole().GetNames(ctx, roleIds)
+	if err != nil {
+		return nil, err
+	}
+
+	res.RoleIds = roleIds
+	res.RoleNames = rolesNames
 
 	// 细粒度权限
 	permissions, err := service.AdminMenu().LoginPermissions(ctx, memberId)
@@ -817,7 +873,7 @@ func (s *sAdminMember) LoadSuperAdmin(ctx context.Context) {
 		return
 	}
 
-	array, err := dao.AdminMember.Ctx(ctx).Fields(dao.AdminMember.Columns().Id).Where(dao.AdminMember.Columns().RoleId, value).Array()
+	array, err := dao.AdminMemberRole.Ctx(ctx).Fields(dao.AdminMemberRole.Columns().MemberId).WhereIn(dao.AdminMemberRole.Columns().RoleId, value).Array()
 	if err != nil {
 		g.Log().Errorf(ctx, "LoadSuperAdmin AdminMember err:%+v", err)
 		return
@@ -846,23 +902,29 @@ func (s *sAdminMember) FilterAuthModel(ctx context.Context, memberId int64) *gdb
 		return m
 	}
 
-	var roleId int64
+	var roleIds []int64
 	if contexts.GetUserId(ctx) == memberId {
 		// 当前登录用户直接从上下文中取角色ID
-		roleId = contexts.GetRoleId(ctx)
+		roleIds = contexts.GetRoleIds(ctx)
 	} else {
-		ro, err := dao.AdminMember.Ctx(ctx).Fields("role_id").Where("id", memberId).Value()
+		ro, err := service.AdminMemberRole().GetRoleIds(ctx, memberId)
 		if err != nil {
 			g.Log().Panicf(ctx, "failed to get role information, err:%+v", err)
 			return nil
 		}
-		roleId = ro.Int64()
+		roleIds = ro
 	}
 
-	roleIds, err := service.AdminRole().GetSubRoleIds(ctx, roleId, false)
-	if err != nil {
-		g.Log().Panicf(ctx, "get the subordinate role permission exception, err:%+v", err)
-		return nil
+	// 查询自己的下级角色的所有用户
+	memberIds := make([]int64, 0)
+	for _, roleId := range roleIds {
+		id, err := service.AdminMemberRole().GetMemberIds(ctx, roleId)
+		if err != nil {
+			g.Log().Panicf(ctx, "get the subordinate role permission exception, err:%+v", err)
+			return nil
+		}
+		memberIds = append(memberIds, id...)
 	}
-	return m.Where("id <> ?", memberId).WhereIn("role_id", roleIds).Handler(handler.FilterAuthWithField("id"))
+
+	return dao.AdminMember.Ctx(ctx).Where("id <> ?", memberId).WherePri(memberIds).Handler(handler.FilterAuthWithField("id"))
 }
