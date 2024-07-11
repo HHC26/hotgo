@@ -78,22 +78,22 @@ func GetUserId(ctx context.Context) int64 {
 	return user.Id
 }
 
-// GetRoleId 获取用户角色ID
-func GetRoleId(ctx context.Context) int64 {
+// GetRoleIds 获取用户所有角色ID
+func GetRoleIds(ctx context.Context) []int64 {
 	user := GetUser(ctx)
 	if user == nil {
-		return 0
+		return nil
 	}
-	return user.RoleId
+	return user.RoleIds
 }
 
-// GetRoleKey 获取用户角色唯一编码
-func GetRoleKey(ctx context.Context) string {
+// GetRoleKey 获取用户所有角色编码
+func GetRoleKey(ctx context.Context) []string {
 	user := GetUser(ctx)
 	if user == nil {
-		return ""
+		return nil
 	}
-	return user.RoleKey
+	return user.RoleKeys
 }
 
 // GetDeptType 获取用户部门类型
