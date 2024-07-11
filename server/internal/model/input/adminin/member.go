@@ -88,11 +88,11 @@ type MemberResetPwdInp struct {
 type LoginMemberInfoModel struct {
 	Id          int64       `json:"id"                 dc:"用户ID"`
 	DeptName    string      `json:"deptName"           dc:"所属部门"`
-	RoleName    string      `json:"roleName"           dc:"所属角色"`
+	RoleNames   []string    `json:"roleNames"          dc:"所属角色"`
 	Permissions []string    `json:"permissions"        dc:"角色信息"`
 	DeptType    string      `json:"deptType"           dc:"部门类型"`
 	DeptId      int64       `json:"-"                  dc:"部门ID"`
-	RoleId      int64       `json:"-"                  dc:"角色ID"`
+	RoleIds     []int64     `json:"-"                  dc:"角色ID"`
 	Username    string      `json:"username"           dc:"用户名"`
 	RealName    string      `json:"realName"           dc:"姓名"`
 	Avatar      string      `json:"avatar"             dc:"头像"`
@@ -115,7 +115,7 @@ type LoginMemberInfoModel struct {
 // MemberEditInp 修改用户
 type MemberEditInp struct {
 	Id           int64       `json:"id"                                            dc:"管理员ID"`
-	RoleId       int64       `json:"roleId"    v:"required#角色不能为空"            dc:"角色ID"`
+	RoleIds      []int64     `json:"roleIds"    v:"required#角色不能为空" 
 	PostIds      []int64     `json:"postIds"                                       dc:"岗位ID"`
 	DeptId       int64       `json:"deptId"    v:"required#部门不能为空"            dc:"部门ID"`
 	Username     string      `json:"username"   v:"required#账号不能为空"           dc:"帐号"`
@@ -203,7 +203,8 @@ type MemberListInp struct {
 type MemberListModel struct {
 	entity.AdminMember
 	DeptName string  `json:"deptName"    dc:"所属部门"`
-	RoleName string  `json:"roleName"    dc:"所属角色"`
+	RoleNames []string `json:"roleNames"   dc:"所属角色"`
+	RoleIds   []int64  `json:"roleIds"     dc:"角色IDs"`
 	PostIds  []int64 `json:"postIds"     dc:"岗位"`
 	DeptId   int64   `json:"deptId"      dc:"部门ID"`
 }
